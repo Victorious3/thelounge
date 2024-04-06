@@ -2244,7 +2244,6 @@ part/quit messages where we don't load previews (adds a blank line otherwise) */
 	border: none;
 	font: inherit;
 	min-height: 19px; /* Required when computing input height at char deletion */
-	height: 19px;
 	max-height: 95px; /* min-height/height x number of lines maximum */
 	line-height: 19px; /* should match height */
 	outline: none;
@@ -2254,6 +2253,16 @@ part/quit messages where we don't load previews (adds a blank line otherwise) */
 	flex: 1 0 auto;
 	align-self: center;
 	touch-action: pan-y;
+	cursor: text;
+	word-wrap: break-word;
+	display: inline-block;
+	overflow: scroll;
+}
+
+#form #input:empty:before {
+	content:attr(data-placeholder);
+	color: rgb(0 0 0 / 35%);
+	opacity: 1;
 }
 
 #form #upload-input {

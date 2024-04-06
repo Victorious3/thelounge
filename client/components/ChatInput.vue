@@ -2,19 +2,20 @@
 	<form id="form" method="post" action="" @submit.prevent="onSubmit">
 		<span id="upload-progressbar" />
 		<span id="nick">{{ network.nick }}</span>
-		<textarea
+		<span
 			id="input"
 			ref="input"
 			dir="auto"
 			class="mousetrap"
 			enterkeyhint="send"
-			:value="channel.pendingMessage"
-			:placeholder="getInputPlaceholder(channel)"
+			contenteditable="true"
+			:data-placeholder="getInputPlaceholder(channel)"
 			:aria-label="getInputPlaceholder(channel)"
 			@input="setPendingMessage"
-			@keypress.enter.exact.prevent="onSubmit"
+			@keydown.enter.shift.exact.prevent="onShiftEnter"
+			@keydown.enter.exact.prevent="onSubmit"
 			@blur="onBlur"
-		/>
+		></span>
 		<span
 			v-if="store.state.serverConfiguration?.fileUpload"
 			id="upload-tooltip"
@@ -54,7 +55,6 @@
 
 <script lang="ts">
 import Mousetrap from "mousetrap";
-import {wrapCursor} from "undate";
 import autocompletion from "../js/autocompletion";
 import commands from "../js/commands/index";
 import socket from "../js/socket";
@@ -89,6 +89,41 @@ const bracketWraps = {
 	_: "_",
 };
 
+function extractText(span: HTMLSpanElement): string {
+	let text = "";
+	for (const child of span.childNodes) {
+		if ((child as HTMLElement).tagName == "BR") text += "\n";
+		else text += child.textContent;
+	}
+	return text;
+}
+
+function wrapCursor(element: HTMLElement, before: string, after: string) {
+	const sel = window.getSelection();
+	if (!sel) return;
+	const range = sel.getRangeAt(0);
+	if (!range || document.activeElement !== element) return;
+
+	const startNode = range.startContainer,
+		startOffset = range.startOffset;
+
+	const startTextNode = document.createTextNode(before);
+	const endTextNode = document.createTextNode(after);
+
+	const boundaryRange = range.cloneRange();
+	boundaryRange.collapse(false);
+	boundaryRange.insertNode(endTextNode);
+	boundaryRange.setStart(startNode, startOffset);
+	boundaryRange.collapse(true);
+	boundaryRange.insertNode(startTextNode);
+
+	// Reselect the original text
+	range.setStartAfter(startTextNode);
+	range.setEndBefore(endTextNode);
+	sel.removeAllRanges();
+	sel.addRange(range);
+}
+
 export default defineComponent({
 	name: "ChatInput",
 	props: {
@@ -97,36 +132,17 @@ export default defineComponent({
 	},
 	setup(props) {
 		const store = useStore();
-		const input = ref<HTMLTextAreaElement>();
+		const input = ref<HTMLSpanElement>();
 		const uploadInput = ref<HTMLInputElement>();
 		const autocompletionRef = ref<ReturnType<typeof autocompletion>>();
 
-		const setInputSize = () => {
-			void nextTick(() => {
-				if (!input.value) {
-					return;
-				}
-
-				const style = window.getComputedStyle(input.value);
-				const lineHeight = parseFloat(style.lineHeight) || 1;
-
-				// Start by resetting height before computing as scrollHeight does not
-				// decrease when deleting characters
-				input.value.style.height = "";
-
-				// Use scrollHeight to calculate how many lines there are in input, and ceil the value
-				// because some browsers tend to incorrently round the values when using high density
-				// displays or using page zoom feature
-				input.value.style.height = `${
-					Math.ceil(input.value.scrollHeight / lineHeight) * lineHeight
-				}px`;
-			});
-		};
-
 		const setPendingMessage = (e: Event) => {
-			props.channel.pendingMessage = (e.target as HTMLInputElement).value;
+			const element = e.target as HTMLSpanElement;
+			const text = extractText(element);
+			if (text.trim().length === 0) element.innerText = "";
+
+			props.channel.pendingMessage = text;
 			props.channel.inputHistoryPosition = 0;
-			setInputSize();
 		};
 
 		const getInputPlaceholder = (channel: ClientChan) => {
@@ -135,6 +151,25 @@ export default defineComponent({
 			}
 
 			return "";
+		};
+
+		const onShiftEnter = () => {
+			const selection = window.getSelection()!;
+			if (document.activeElement === input.value) {
+				const range = selection.getRangeAt(0)!;
+				const br = document.createElement("br");
+				range.deleteContents();
+
+				const isSingleLine = input.value.querySelectorAll("br").length === 0;
+				range.insertNode(br);
+
+				// We need to add a second trailing br if we want to move the cursor past the last one
+				if (isSingleLine && input.value.lastElementChild == br)
+					input.value.appendChild(document.createElement("br"));
+
+				range.setStartAfter(br);
+				range.setEndAfter(br);
+			}
 		};
 
 		const onSubmit = () => {
@@ -159,13 +194,18 @@ export default defineComponent({
 			}
 
 			if (autocompletionRef.value) {
-				autocompletionRef.value.hide();
+				if (store.state.isAutoCompleting) {
+					autocompletionRef.value.commit();
+					autocompletionRef.value.hide();
+					return;
+				} else {
+					autocompletionRef.value.hide();
+				}
 			}
 
 			props.channel.inputHistoryPosition = 0;
 			props.channel.pendingMessage = "";
-			input.value.value = "";
-			setInputSize();
+			input.value.innerText = "";
 
 			// Store new message in history if last message isn't already equal
 			if (props.channel.inputHistory[1] !== text) {
@@ -187,7 +227,7 @@ export default defineComponent({
 
 				if (
 					Object.prototype.hasOwnProperty.call(commands, cmd) &&
-					commands[cmd].input(args)
+					(commands[cmd] as any).input(args)
 				) {
 					return false;
 				}
@@ -229,13 +269,6 @@ export default defineComponent({
 			}
 		);
 
-		watch(
-			() => props.channel.pendingMessage,
-			() => {
-				setInputSize();
-			}
-		);
-
 		onMounted(() => {
 			eventbus.on("escapekey", blurInput);
 
@@ -256,44 +289,48 @@ export default defineComponent({
 					return;
 				}
 
-				wrapCursor(
-					e.target as HTMLTextAreaElement,
-					modifier,
-					(e.target as HTMLTextAreaElement).selectionStart ===
-						(e.target as HTMLTextAreaElement).selectionEnd
-						? ""
-						: modifier
-				);
+				const selection = window.getSelection()?.getRangeAt(0);
+				let wrapEnd = "";
+				if (
+					document.activeElement === e.target &&
+					selection?.startOffset === selection?.endOffset
+				)
+					wrapEnd = modifier;
+
+				wrapCursor(e.target as HTMLElement, modifier, wrapEnd);
 
 				return false;
 			});
 
 			inputTrap.bind(Object.keys(bracketWraps), function (e, key) {
+				const selection = window.getSelection()?.getRangeAt(0);
 				if (
-					(e.target as HTMLTextAreaElement)?.selectionStart !==
-					(e.target as HTMLTextAreaElement).selectionEnd
+					document.activeElement === e.target &&
+					selection?.startOffset !== selection?.endOffset
 				) {
-					wrapCursor(e.target as HTMLTextAreaElement, key, bracketWraps[key]);
+					wrapCursor(e.target as HTMLElement, key, bracketWraps[key]);
 
 					return false;
 				}
 			});
 
 			inputTrap.bind(["up", "down"], (e, key) => {
+				const range = window.getSelection()?.getRangeAt(0)!;
+
 				if (
 					store.state.isAutoCompleting ||
-					(e.target as HTMLTextAreaElement).selectionStart !==
-						(e.target as HTMLTextAreaElement).selectionEnd ||
+					range?.startOffset !== range?.endOffset ||
 					!input.value
 				) {
 					return;
 				}
 
-				const onRow = (
-					input.value.value.slice(undefined, input.value.selectionStart).match(/\n/g) ||
-					[]
-				).length;
-				const totalRows = (input.value.value.match(/\n/g) || []).length;
+				const childElements = Array.from(input.value.childNodes.values());
+				const lastIndex = childElements.indexOf(range.endContainer as ChildNode);
+				const onRow = childElements
+					.slice(undefined, lastIndex)
+					.reduce((sum, val) => sum + ((val as HTMLElement).tagName === "BR" ? 1 : 0), 0);
+				const totalRows = input.value.querySelectorAll("br").length;
 
 				const {channel} = props;
 
@@ -318,8 +355,9 @@ export default defineComponent({
 				}
 
 				channel.pendingMessage = channel.inputHistory[channel.inputHistoryPosition];
-				input.value.value = channel.pendingMessage;
-				setInputSize();
+				input.value.innerText = channel.pendingMessage;
+				range.setStartAfter(input.value.lastChild!);
+				range.setEndAfter(input.value.lastChild!);
 
 				return false;
 			});
@@ -349,10 +387,10 @@ export default defineComponent({
 			openFileUpload,
 			blurInput,
 			onBlur,
-			setInputSize,
 			upload,
 			getInputPlaceholder,
 			onSubmit,
+			onShiftEnter,
 			setPendingMessage,
 		};
 	},

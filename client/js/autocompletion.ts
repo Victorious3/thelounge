@@ -2,7 +2,7 @@ import constants from "./constants";
 
 import Mousetrap from "mousetrap";
 import {Strategy, Textcomplete, StrategyProps} from "@textcomplete/core";
-import {TextareaEditor} from "@textcomplete/textarea";
+import {ContenteditableEditor} from "@textcomplete/contenteditable";
 
 import fuzzy from "fuzzy";
 
@@ -152,7 +152,7 @@ const backgroundColorStrategy: StrategyProps = {
 	index: 2,
 };
 
-function enableAutocomplete(input: HTMLTextAreaElement) {
+function enableAutocomplete(input: HTMLSpanElement) {
 	let tabCount = 0;
 	let lastMatch = "";
 	let currentMatches: string[] | string[][] = [];
@@ -176,10 +176,15 @@ function enableAutocomplete(input: HTMLTextAreaElement) {
 
 			e.preventDefault();
 
-			const text = input.value;
+			const selection = window.getSelection();
+			const range = selection?.getRangeAt(0)!;
+
+			const rangeFromStart = range.cloneRange()!;
+			rangeFromStart.setStartBefore(rangeFromStart.endContainer);
+			const selectedText = rangeFromStart.cloneContents().textContent!;
 
 			if (tabCount === 0) {
-				lastMatch = text.substring(0, input.selectionStart).split(/\s/).pop() || "";
+				lastMatch = selectedText.split(/\s/).pop() || "";
 
 				if (lastMatch.length === 0) {
 					return;
@@ -192,18 +197,21 @@ function enableAutocomplete(input: HTMLTextAreaElement) {
 				}
 			}
 
-			const position = input.selectionStart - lastMatch.length;
+			const position = selectedText.length - lastMatch.length;
 			const newMatch = replaceNick(
 				// TODO: type this properly
 				String(currentMatches[tabCount % currentMatches.length]),
 				position
 			);
-			const remainder = text.substring(input.selectionStart);
 
-			input.value = text.substr(0, position) + newMatch + remainder;
+			const text = rangeFromStart.endContainer.textContent!;
+			const remainder = text.substring(selectedText.length);
 
-			input.selectionStart -= remainder.length;
-			input.selectionEnd = input.selectionStart;
+			rangeFromStart.endContainer.textContent =
+				text.substring(0, position) + newMatch + remainder;
+
+			range.setStart(rangeFromStart.endContainer, position + newMatch.length);
+			range.setEnd(rangeFromStart.endContainer, position + newMatch.length);
 
 			// Propagate change to Vue model
 			input.dispatchEvent(
@@ -227,7 +235,7 @@ function enableAutocomplete(input: HTMLTextAreaElement) {
 		backgroundColorStrategy,
 	];
 
-	const editor = new TextareaEditor(input);
+	const editor = new ContenteditableEditor(input);
 	const textcomplete = new Textcomplete(editor, strategies, {
 		dropdown: {
 			className: "textcomplete-menu",
@@ -246,6 +254,9 @@ function enableAutocomplete(input: HTMLTextAreaElement) {
 	return {
 		hide() {
 			textcomplete.hide();
+		},
+		commit() {
+			editor.emitEnterEvent();
 		},
 		destroy() {
 			textcomplete.destroy();
